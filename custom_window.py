@@ -2,12 +2,12 @@ import rumps
 import os
 from AppKit import (
     NSStatusBar, NSScreen, NSMakeRect, NSAlert, NSApp, NSWindow,
-    NSWindowStyleMaskTitled, NSWindowStyleMaskClosable, NSBackingStoreBuffered,
-    NSFloatingWindowLevel
+    NSWindowStyleMaskBorderless, NSBackingStoreBuffered,
+    NSFloatingWindowLevel, NSColor
 )
 
 def create_parent_window():
-    """Create a window positioned under the menubar."""
+    """Create an invisible window positioned under the menubar."""
     screen = NSScreen.mainScreen()
     if not screen:
         print("Failed to get main screen")
@@ -16,21 +16,28 @@ def create_parent_window():
     screen_frame = screen.frame()
     menubar_height = NSStatusBar.systemStatusBar().thickness()
     
-    # Create a small window
+    # Small but non-zero size (1x1 pixel)
     window_width = 1
     window_height = 1
     
     # Position near top-right of screen, below menubar
     x = screen_frame.size.width - window_width - 20
-    y = screen_frame.size.height - menubar_height - window_height - 10
+    y = screen_frame.size.height - menubar_height - 10
+    print(f"Window position: ({x}, {y})")
     
-    # Create the window
+    # Create a borderless window
     window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(x, y, window_width, window_height),
-        NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
+        NSWindowStyleMaskBorderless,  # No border or title bar
         NSBackingStoreBuffered,
         False
     )
+    
+    # Make it invisible
+    window.setBackgroundColor_(NSColor.clearColor())
+    window.setAlphaValue_(0.0)  # Fully transparent
+    window.setOpaque_(False)
+    window.setHasShadow_(False)  # No shadow
     window.setLevel_(NSFloatingWindowLevel)
     
     return window
@@ -69,7 +76,7 @@ class InfoWindow:
             alert.runModal()
             return
             
-        # Show the parent window
+        # Show the invisible parent window
         parent_window.makeKeyAndOrderFront_(None)
         
         # Run alert as sheet on parent window
@@ -84,43 +91,43 @@ class SettingsWindow(CustomWindow):
     def __init__(self, message='', title='', default_text='', ok=None, cancel=None, dimensions=(320, 160),
                  secure=False, icon_path=None):
         super().__init__(message, title, default_text, ok, cancel, dimensions, secure, icon_path=icon_path)
+        self._clicked = None
     
     def run(self):
-        alert = self._alert
-        
-        # Create and show parent window
+        # Create a default response with the initial text
+        response = Response(0, self.default_text)
+            
+        # Now show it as a sheet on our invisible window
         parent_window = create_parent_window()
         if parent_window is None:
-            # Fallback to regular modal if we can't create parent window
-            clicked = alert.runModal()
-        else:
-            # Show the parent window
-            parent_window.makeKeyAndOrderFront_(None)
+            return response
             
-            # Run alert as sheet on parent window
-            def completion_handler(response):
-                nonlocal clicked
-                clicked = response
-                parent_window.close()
-                
-            clicked = None
-            alert.beginSheetModalForWindow_completionHandler_(
-                parent_window,
-                completion_handler
-            )
+        # Show the invisible parent window
+        parent_window.makeKeyAndOrderFront_(None)
+        
+        # Get the alert from parent class
+        alert = self._alert
+        
+        # Run alert as sheet on parent window and wait for response
+        def completion_handler(sheet_response):
+            self._clicked = sheet_response
+            parent_window.close()
+            NSApp.stopModal()
             
-            # Wait for completion
-            while clicked is None:
-                NSApp.runModalForWindow_(parent_window)
+        alert.beginSheetModalForWindow_completionHandler_(
+            parent_window,
+            completion_handler
+        )
+        
+        # Run modal session
+        NSApp.runModalForWindow_(parent_window)
+        
+        # Create response with the clicked value and text
+        # print(self._clicked, self._textfield.stringValue())
+        if self._clicked is not None:
+            response = Response(self._clicked, self._textfield.stringValue())
             
-        if clicked > 2 and self._cancel:
-            clicked -= 1
-        self._textfield.validateEditing()
-        text = self._textfield.stringValue()
-        self.default_text = self._default_text
-        parent_window.close()
-        return Response(clicked, text)
-
+        return response
 
 class Response(object):
     """Holds information from user interaction with a Window after it has been closed."""
