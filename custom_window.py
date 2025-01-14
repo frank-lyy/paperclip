@@ -1,11 +1,39 @@
 import rumps
 import os
 from AppKit import (
-    NSStatusBar, NSScreen, NSMakeRect, NSAlert, 
-    NSApp, NSWindow, NSWindowStyleMaskTitled,
-    NSWindowStyleMaskClosable, NSBackingStoreBuffered,
+    NSStatusBar, NSScreen, NSMakeRect, NSAlert, NSApp, NSWindow,
+    NSWindowStyleMaskTitled, NSWindowStyleMaskClosable, NSBackingStoreBuffered,
     NSFloatingWindowLevel
 )
+
+def create_parent_window():
+    """Create a window positioned under the menubar."""
+    screen = NSScreen.mainScreen()
+    if not screen:
+        print("Failed to get main screen")
+        return None
+        
+    screen_frame = screen.frame()
+    menubar_height = NSStatusBar.systemStatusBar().thickness()
+    
+    # Create a small window
+    window_width = 1
+    window_height = 1
+    
+    # Position near top-right of screen, below menubar
+    x = screen_frame.size.width - window_width - 20
+    y = screen_frame.size.height - menubar_height - window_height - 10
+    
+    # Create the window
+    window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(x, y, window_width, window_height),
+        NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
+        NSBackingStoreBuffered,
+        False
+    )
+    window.setLevel_(NSFloatingWindowLevel)
+    
+    return window
 
 class CustomWindow(rumps.Window):
     """Base window class that supports setting an icon and custom positioning."""
@@ -25,50 +53,30 @@ class InfoWindow:
         self.message = message
         self.title = title
         self.icon_path = icon_path
+
+        self._alert = NSAlert.alloc().init()
+        self._alert.setMessageText_(title)
+        self._alert.setInformativeText_(message)
+        self._alert.addButtonWithTitle_("OK")
         
     def run(self):
-        # Create a custom window
-        screen = NSScreen.mainScreen()
-        if not screen:
-            # Fallback to NSAlert if we can't get screen info
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_(self.title)
-            alert.setInformativeText_(self.message)
-            alert.addButtonWithTitle_("OK")
+        alert = self._alert
+        
+        # Create and show parent window
+        parent_window = create_parent_window()
+        if parent_window is None:
+            # Fallback to regular modal if we can't create parent window
             alert.runModal()
             return
-
-        screen_frame = screen.frame()
-        window_width = 300
-        window_height = 200
-        menubar_height = NSStatusBar.systemStatusBar().thickness()
+            
+        # Show the parent window
+        parent_window.makeKeyAndOrderFront_(None)
         
-        # Position near top-right of screen, below menubar
-        x = screen_frame.size.width - window_width - 20
-        y = screen_frame.size.height - menubar_height - window_height - 10
-        
-        # Create the window
-        window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, window_width, window_height),
-            NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
-            NSBackingStoreBuffered,
-            False
+        # Run alert as sheet on parent window
+        alert.beginSheetModalForWindow_completionHandler_(
+            parent_window,
+            lambda response: parent_window.close()  # Close parent window when done
         )
-        
-        window.setTitle_(self.title)
-        window.setLevel_(NSFloatingWindowLevel)
-        window.center()  # This will center the window
-        
-        # Make the window key and order front
-        window.makeKeyAndOrderFront_(None)
-        NSApp.activateIgnoringOtherApps_(True)
-        
-        # Run modal for window
-        NSApp.runModalForWindow_(window)
-        
-        # Clean up
-        window.orderOut_(None)
-        NSApp.stopModal()
 
 class SettingsWindow(CustomWindow):
     """A custom window that supports setting an icon and custom positioning."""
@@ -78,42 +86,44 @@ class SettingsWindow(CustomWindow):
         super().__init__(message, title, default_text, ok, cancel, dimensions, secure, icon_path=icon_path)
     
     def run(self):
-        print("Running custom window")
-        # Create but don't run the alert
         alert = self._alert
-        window = alert.window()
-        print("Window:", window)
         
-        if window:
-            # Get screen dimensions
-            screen = NSScreen.mainScreen()
-            if screen:
-                screen_frame = screen.frame()
-                window_frame = window.frame()
-                menubar_height = NSStatusBar.systemStatusBar().thickness()
+        # Create and show parent window
+        parent_window = create_parent_window()
+        if parent_window is None:
+            # Fallback to regular modal if we can't create parent window
+            clicked = alert.runModal()
+        else:
+            # Show the parent window
+            parent_window.makeKeyAndOrderFront_(None)
+            
+            # Run alert as sheet on parent window
+            def completion_handler(response):
+                nonlocal clicked
+                clicked = response
+                parent_window.close()
                 
-                # Position near top-right of screen, below menubar
-                new_frame = NSMakeRect(
-                    screen_frame.size.width - window_frame.size.width - 20,
-                    screen_frame.size.height - menubar_height - window_frame.size.height - 10,
-                    window_frame.size.width,
-                    window_frame.size.height
-                )
-                print("New frame:", new_frame)
-                window.setFrame_display_(new_frame, True)
-        
-        # Now run the alert and return the response
-        clicked = alert.runModal()
+            clicked = None
+            alert.beginSheetModalForWindow_completionHandler_(
+                parent_window,
+                completion_handler
+            )
+            
+            # Wait for completion
+            while clicked is None:
+                NSApp.runModalForWindow_(parent_window)
+            
         if clicked > 2 and self._cancel:
             clicked -= 1
         self._textfield.validateEditing()
         text = self._textfield.stringValue()
-        self.default_text = self._default_text  # reset default text
+        self.default_text = self._default_text
+        parent_window.close()
         return Response(clicked, text)
 
 
 class Response(object):
-    """Holds information from user interaction with a :class:`rumps.Window` after it has been closed."""
+    """Holds information from user interaction with a Window after it has been closed."""
 
     def __init__(self, clicked, text):
         self._clicked = clicked
@@ -125,10 +135,8 @@ class Response(object):
 
     @property
     def clicked(self):
-        """Return a number representing the button pressed by the user."""
         return self._clicked
 
     @property
     def text(self):
-        """Return the text collected from the user."""
         return self._text
